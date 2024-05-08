@@ -1,0 +1,185 @@
+var TT = ee.FeatureCollection("users/626251037/newSimples/TT-new"),
+    TC = ee.FeatureCollection("users/626251037/newSimples/TC-new"),
+    gys5qx = ee.FeatureCollection("users/626251037/newSimples/gys5qx_surface"),
+    gys = ee.FeatureCollection("users/626251037/newSimples/gys_surface"),
+    image = ee.Image("users/626251037/percentile/LC08_pro"),
+    image2 = ee.Image("users/626251037/percentile/rsult/TTpro_3y_1988-2019"),
+    image4 = ee.Image("users/626251037/percentile/rsult/TTpro_LT3p_1988-2019"),
+    bounds = ee.FeatureCollection("users/626251037/newSimples/2019yangbanbianjie");
+
+
+//版本日期：202000702 v4 toa uesd
+//by:lwy of gee
+//other titian
+//again
+
+var TTbuf1 = TT.geometry().difference(TC.geometry())
+var Buf = TTbuf1.buffer(100).difference(TTbuf1.buffer(-100))
+var differ = bounds.geometry().difference(Buf)
+print(differ.area(), bounds.geometry().area())
+
+
+var pixelArea = ee.Image.pixelArea()
+print(bounds.filterMetadata("id", "equals", 1))
+
+Map.centerObject(gys,8);
+// Map.addLayer(image.select("B1989").clip(gys), {min: 0, max: 1, palette: ['red', 'green']},"result-smileRF", 0);
+print(gys.geometry().area())
+
+var newAllImg = image4.select("B2019").gt(0.5).unmask(0).clip(gys)
+// var newAllImg = image4.select("B2019").clip(gys)
+                // .focal_mean(1.5).gt(0.5).unmask(0).clip(gys)
+
+print(newAllImg)
+
+// print( "处理后count：", newAllImg.reduceRegion({
+//       reducer: ee.Reducer.count(),
+//       geometry: gys.geometry(),
+//       scale: 30,
+//       maxPixels: 1e13
+//     }) )
+
+
+
+// print( "融合影像minMax():",newAllImg.reduceRegion({
+//       reducer: ee.Reducer.minMax(),
+//       geometry: gys.geometry(),
+//       scale: 30,
+//       maxPixels: 1e13
+//     }) )
+
+
+print( "年梯田面积：",newAllImg.multiply(pixelArea).divide(1000000).reduceRegion({
+      reducer: ee.Reducer.sum(),
+      geometry: gys.geometry(),
+      scale: 30,
+      maxPixels: 1e13
+    }) )
+
+// //分区县统计
+// for (var i= 1; i < 6; i++) {
+//   var yearAreaNum = newaAllImg.reduceRegion({
+//       reducer: ee.Reducer.mean(),
+//       geometry: gys5qx.filterMetadata("OBJECTID", "equals", i),//.geometry(),
+//       scale: 30,
+//       maxPixels: 1e13
+//     });
+//   print( i, yearAreaNum ,gys5qx.filterMetadata("OBJECTID", "equals", i).geometry().area() )
+    
+//   // Map.addLayer(gys5qx.filterMetadata("OBJECTID", "equals", i), {color:'7B68EE'}, "bound"+i, 0);
+// }
+
+// 导出2019结果影像
+
+
+
+//-------------优化后验证
+var image2019 = newAllImg.select("B2019")
+// print(bounds)
+
+//accuracy
+
+var real_img1 = ee.Image.constant(1).clip(TC);
+// real_img1 = real_img1.unmask(0);
+
+var real_img2 = ee.Image.constant(4).clip(TT);
+real_img2 = real_img2.unmask(1);
+var real_img = real_img2.where(real_img1.eq(1), 1)
+                        .clip(bounds);
+var pre_img = image2019.unmask(0).clip(bounds);
+// Map.addLayer(real_img, {min: 0, max: 4, palette: ['red', 'green']}, "simple point", 0);
+
+// 1, 2, 3, 4 对应 正确分为其它，误分为梯田，误分为其它，正确分为梯田
+real_img = real_img.where(pre_img.eq(1).and(real_img.eq(1)), 2);
+real_img = real_img.where(pre_img.eq(0).and(real_img.eq(4)), 3);
+
+
+var newImg = ee.Image.constant(1).rename("count");
+newImg = newImg.addBands(real_img.rename("titian"))
+          // .clip(bounds);//0m buffer
+          .clip(differ);//100m buffer
+
+function kappaPrint (newImg){
+    var acc_dict = newImg.reduceRegion({
+      reducer: ee.Reducer.count().group({
+        groupField: 1, 
+        groupName: 'index',
+      }), 
+      // geometry: bounds, 
+      geometry: bounds,
+      scale: 30,
+      maxPixels: 1e13
+    });
+    var temp_groups = ee.List(ee.Dictionary(acc_dict).get("groups"));
+    var temp_counts = ee.List.repeat(0, 4);
+    var counts = temp_groups.iterate(function (data, list){
+      data = ee.Dictionary(data);
+      list = ee.List(list);
+      var index = ee.Number(data.get("index"));
+      var count = ee.Number(data.get("count"));
+      list = list.set(index.subtract(1), count);
+      return list;
+    }, temp_counts);
+    counts = ee.List(counts);
+    var arr = ee.Array([
+      [
+        ee.Number(counts.get(0)).toInt(), 
+        ee.Number(counts.get(1)).toInt()
+      ], 
+      [
+        ee.Number(counts.get(2)).toInt(),
+        ee.Number(counts.get(3)).toInt()
+      ]
+]);
+var conf = ee.ConfusionMatrix(arr);
+print("array is: ", conf.array());
+print("accuracy is: ", conf.accuracy());
+print("kappa is: ", conf.kappa());
+// print("consumersAccuracy is: ", conf.consumersAccuracy());
+// print("producersAccuracy is: ", conf.producersAccuracy());
+}
+kappaPrint(newImg.clip(bounds))
+
+// fenkuaijisuan。
+for (var i= 1; i < 7; i++) {
+  var img = newImg.clip(bounds.filterMetadata("id", "equals", i))
+      
+      // .remap([1, 2, 3, 4],
+      //       [0, 100, 220, 250]) //4区色
+
+  var r = img.select("titian").remap([1, 2, 3, 4],[0,     0, 255, 176]).rename('r'),
+      g = img.select("titian").remap([1, 2, 3, 4],[255, 255, 255, 122]).rename('g'),
+      b = img.select("titian").remap([1, 2, 3, 4],[0,   255,   0, 209]).rename('b');
+  var rgb = r.addBands(g).addBands(b)
+  
+  Export.image.toDrive({ 
+    image: rgb,
+    description: "2019_1234_"+i+'_100m-buffer', 
+    fileNamePrefix: "2019_1234_"+i+'_100m-buffer', 
+    region: bounds.filterMetadata("id", "equals", i), 
+    scale: 30, 
+    crs: "EPSG:4326", 
+    maxPixels: 1e13 
+  });
+  
+  Map.addLayer(rgb, null, "bound"+i, 0);
+  print("i=",i)
+  kappaPrint(img)
+}
+
+// // 导出结果影像
+// Export.image.toDrive({ 
+//   image: newImg.select("titian").remap([1, 2, 3, 4],
+//                       [0, 100, 220, 250]), 
+//   description: "2019_1234", 
+//   fileNamePrefix: "2019_1234", 
+//   region: bounds, 
+//   scale: 30, 
+//   crs: "EPSG:4326", 
+//   maxPixels: 1e13 
+// });
+
+/*
+*/
+
+// Map.addLayer(newfc, {min: 0, max: 1, palette: ['red', 'green']}, "simple point", 0);

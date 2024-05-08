@@ -1,0 +1,142 @@
+var gys5qx = ee.FeatureCollection("users/626251037/newSimples/gys5qx_surface"),
+    gys = ee.FeatureCollection("users/626251037/newSimples/gys_surface"),
+    image = ee.Image("users/626251037/percentile/LT05_pro_1987-2011"),
+    image2 = ee.Image("users/626251037/percentile/LE07_pro"),
+    image3 = ee.Image("users/626251037/percentile/LC08_pro"),
+    geometry = /* color: #d63000 */ee.Geometry.MultiPoint(
+        [[106.24144102084924, 36.00903130642767],
+         [106.36366392123986, 35.98694930557179],
+         [106.23199964511682, 35.96458324457825],
+         [106.17260480869103, 36.02916358938273],
+         [106.3356831167965, 36.046376082192445],
+         [106.30409742343713, 35.98889388091306],
+         [106.23629117954064, 36.04179570551903],
+         [106.20144392001916, 35.99764387680963],
+         [106.32830167758752, 36.021805489245175]]);
+
+
+/*
+  20200929 LT
+*/
+Map.centerObject(geometry,13)
+
+var imgList = image.slice(1).addBands(image2).addBands(image3)
+              .unmask(0)
+              .clip(gys)
+
+
+var run_params = {
+    maxSegments: 10,
+    spikeThreshold: 0.9,
+    vertexCountOvershoot: 3,
+    preventOneYearRecovery: false,
+    recoveryThreshold: 1,
+    pvalThreshold: 0.01,
+    bestModelProportion: 0.1,
+    minObservationsNeeded: 7
+};  
+
+
+
+
+var bandName = "TT"
+var bandNum = imgList.bandNames().length().getInfo();
+var imgs = []
+
+// print(ee.Date(imgList.slice( 0, 1 ).bandNames().getString(0).slice(1).cat("-7-1")).millis())
+
+for ( var i=0;  i < bandNum;  i++ ){
+  
+  imgs = imgs.concat(imgList.slice( i, i+1 ).rename(bandName)
+                            .set('system:time_start', ee.Date(imgList.slice( i, i+1 ).bandNames().getString(0).slice(1).cat("-7-1")).millis())
+                            .set('system:year', imgList.slice( i, i+1 ).bandNames().getString(0).slice(1))
+                            )
+}
+
+var ltCollection = ee.ImageCollection(imgs)
+                  // .filterMetadata('system:year', "not_equals", "1994")
+                  // .filterMetadata('system:year', "not_equals", "1997")
+                  // .filterMetadata('system:year', "not_equals", "1998")
+                  // .filterMetadata('system:year', "not_equals", "2002")
+                  // .filterMetadata('system:year', "not_equals", "2003")
+                  // .filterMetadata('system:year', "not_equals", "2005")
+                  
+
+
+
+
+print(ltCollection)
+
+run_params.timeSeries = ltCollection;      
+
+print("run_params",run_params)
+var lt = ee.Algorithms.TemporalSegmentation.LandTrendr(run_params); 
+
+
+var names = imgList.bandNames()
+var TT2 = lt.select("LandTrendr")
+              .arraySlice({axis: 0, start: 2, end: 3, step: 1})
+              .arrayProject([1])
+              .arrayFlatten([names])
+
+
+Map.addLayer({eeObject:lt, name:"lt", shown:0})
+Map.addLayer({eeObject:imgList, name:"TTorgin"})    
+Map.addLayer({eeObject:TT2, name:"TTresult", shown:0})
+
+
+print(lt, imgList, TT2)
+
+
+var pixelArea = ee.Image.pixelArea().clip(gys)
+
+var newAllImg = TT2.focal_mean(1.5).gt(0.5).unmask(0).clip(gys)
+
+var slopexx = ee.Terrain.slope(ee.Image("USGS/SRTMGL1_003").clip(gys).select('elevation'));
+var denmask = slopexx.gte(2).bitwiseAnd(slopexx.lte(25)).unmask(0)
+
+//孤点去除
+var imgkernel1 = newAllImg.focal_mean(5.5)
+var imgkernel2 = newAllImg.focal_mean(15.5)
+// Map.addLayer(img3_33.clip(gys), {min: 0, max: 1, palette: ['red', 'green']}, i+"A", 0);
+// print(newAllImg, imgkernel1, imgkernel2)
+
+newAllImg = newAllImg.where(imgkernel1.gte(0.975), 1)// 3/120
+                     .where(imgkernel1.lte(0.025), 0)
+                     .where(imgkernel2.gte(0.975), 1)// 24/960
+                     .where(imgkernel2.lte(0.025), 0)
+                
+newAllImg = newAllImg.bitwiseAnd(denmask).toInt8().clip(gys)
+
+// print( "LT后年梯田count：", newAllImg.reduceRegion({
+//       reducer: ee.Reducer.count(),
+//       geometry: gys.geometry(),
+//       scale: 30,
+//       maxPixels: 1e13
+//     }) )
+
+// print( "LT后年梯田面积：", newAllImg.multiply(pixelArea).reduceRegion({
+//       reducer: ee.Reducer.sum(),
+//       geometry: gys.geometry(),
+//       scale: 30,
+//       maxPixels: 1e13
+//     }) )
+
+var rmse = lt.select("rmse")
+print( "LT-rmse：",rmse.reduceRegion({
+      reducer: ee.Reducer.mean(),
+      geometry: gys.geometry(),
+      scale: 30,
+      maxPixels: 1e13
+    }) )
+
+// 导出结果影像
+Export.image.toAsset({ 
+  image: rmse.addBands(newAllImg),
+  description: "TTpro_LT1988-2019",
+  assetId: 'percentile/rsult/TTpro_LT_1988-2019',
+  region: gys, 
+  scale: 30, 
+  crs: "EPSG:4326", 
+  maxPixels: 1e13 
+});

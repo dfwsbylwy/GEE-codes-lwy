@@ -1,0 +1,379 @@
+var roi = 
+    /* color: #d63000 */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[105.22050589002494, 35.93265221885881],
+          [105.22050589002494, 35.870357726853044],
+          [107.08818167127494, 35.870357726853044],
+          [107.08818167127494, 35.93265221885881]]], null, false),
+    gys = ee.FeatureCollection("users/626251037/newSimples/gys_surface"),
+    point = /* color: #d63000 */ee.Geometry.Point([106.24096811996102, 35.893588043657914]),
+    titian = ee.FeatureCollection("users/626251037/newSimples/tt_2010-2015a_20200316_804"),
+    table = ee.FeatureCollection("users/626251037/newSimples/other_2010-2015a_20200316_1151"),
+    table2 = ee.FeatureCollection("users/626251037/newSimples/pingdi_2010-2015a_20200316_90"),
+    table3 = ee.FeatureCollection("users/626251037/newSimples/lindi_2010-2015a_20200316_84"),
+    table4 = ee.FeatureCollection("users/626251037/newSimples/tt_2000a_20200322_236"),
+    table5 = ee.FeatureCollection("users/626251037/newSimples/other_2000a_20200322_308");
+
+
+//版本日期：202000702 v5 toa uesd
+//by:lwy of gee
+//other titian
+//landsat5,ok
+Map.centerObject(gys,8);
+function ImageColByOneVis (imgCol) { 
+  var indexList = imgCol.reduceColumns(ee.Reducer.toList(), ["system:index"]) 
+                        .get("list"); 
+  indexList.evaluate(function(indexs) { 
+    for (var i=0; i<indexs.length; i++) { 
+      var image = imgCol.filter(ee.Filter.eq("system:index", indexs[i])).first(); 
+      Map.addLayer(image,{max:30000, min:0, bands:["B4", "B3", "B2"]}, indexs[i],0);
+    } 
+  }); 
+} //影集集单一显示，排查异常影像
+
+
+
+function landsatND (image,LSR_BANDS,STD_NAMES){
+    var img=image.select(LSR_BANDS,STD_NAMES);
+    // var glcm = img.select("nir").rename("glcm").glcmTexture()
+    //           .select("glcm_asm","glcm_contrast","glcm_corr","glcm_var","glcm_idm","glcm_ent");
+    //------------------------ndBands
+    // ndvi归一化植被指数
+    var ndvi = img.normalizedDifference(['nir',  'red'  ]).rename("ndvi");
+    // ndmi归一化湿度指数
+    var ndmi = img.normalizedDifference(['nir',  'swir1']).rename("ndmi");
+    // ndwi归一化水体指数
+    var ndwi = img.normalizedDifference(['green', 'nir' ]).rename("ndwi");
+    // ndbi归一化建筑指数
+    var ndbi = img.normalizedDifference(['swir2', 'nir' ]).rename("ndbi");
+    // evi增强型植被指数
+    var evi = img.expression(
+        "(nir - red)/(nir + 6*red - 7.5*blue + 1)",
+         {
+         "nir":  img.select("nir"),
+         "red":  img.select("red"),
+         "blue": img.select("blue")
+        }
+    ).rename("evi");
+    return ndvi.addBands(ndmi).addBands(ndwi).addBands(ndbi).addBands(evi)//.addBands(glcm)
+}
+
+var cloudMaskL457 = function(image) {
+  var qa = image.select('pixel_qa');
+  // If the cloud bit (5) is set and the cloud confidence (7) is high
+  // or the cloud shadow bit is set (3), then it's a bad pixel.
+  var cloud = qa.bitwiseAnd(1 << 5)
+                  .and(qa.bitwiseAnd(1 << 7))
+                  .or(qa.bitwiseAnd(1 << 3));
+  // Remove edge pixels that don't occur in all bands
+  var mask2 = image.mask().reduce(ee.Reducer.min());
+  return image.updateMask(cloud.not()).updateMask(mask2);
+};
+
+function maskL8sr(image) {
+  // Bits 3 and 5 are cloud shadow and cloud, respectively.
+  var cloudShadowBitMask = (1 << 3);
+  var cloudsBitMask = (1 << 5);
+  // Get the pixel QA band.
+  var qa = image.select('pixel_qa');
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+                 .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+
+function composite_year (eeNumYear){
+    var eeStrYear = String(eeNumYear);
+    // Load the Landsat 8 scaled radiance image collection.
+    var landsatCollection_1 = ee.ImageCollection(imageColName)
+    .filterDate(ee.Date(eeStrYear+"-1-1"), ee.Date(eeStrYear+"-10-1"))
+    // .filterMetadata('CLOUD_COVER','less_than',yun)///////-------剔除多云
+    .filterBounds(gys.geometry())
+    .map(function(image) {
+        var imgGeometry = image.geometry();
+        imgGeometry =  imgGeometry.buffer(-8000);
+        image = image.clip(imgGeometry);
+        return image.addBands(landsatND (image, LSR_BANDS, STD_NAMES));
+    })
+    .map(cloudMaskL457).select(needBands);
+
+    //------------------------特征波段组合
+    // 最终组合训练bands：//mosaic
+    var  composite_1 = landsatCollection_1
+                      .reduce({
+                          reducer: ee.Reducer.percentile([10, 25, 50, 75, 90 ]),
+                          // reducer: ee.Reducer.max(),
+                      });
+                      // .median()
+                      // .addBands(landsatCollection_1.min())
+                      // .addBands(landsatCollection_1.max())
+    // composite_1 = composite_1.addBands(composite_1.select(["[a-zA-Z0-9_]+p90"]).subtract(composite_1.select(["[a-zA-Z0-9_]+p10"])))
+    var num1 = landsatCollection_1.size().int();
+    var num2 = landsatCollection_1.filterBounds(point).size().int();
+    
+    var arrayTemp = ee.Array([eeNumYear,num1,num2]);
+    yearImgNum = yearImgNum.concat([arrayTemp]);
+
+
+    composite_1 = composite_1.clip(gys);
+    
+    
+    // Export.image.toDrive({ 
+    //   image: composite_1.addBands(demProducts).clip(gys), 
+    //   description: eeNumYear+"imgC", 
+    //   fileNamePrefix: eeNumYear+"imgC", 
+    //   region: gys, 
+    //   scale: 30, 
+    //   crs: "EPSG:4326", 
+    //   maxPixels: 1e13 
+    // });
+    
+    // var visP = {max:30000, min:0, bands:["B3", "B2", "B1"]};
+    // var visP = {max:3000, min:0, bands:["B4", "B3", "B2"]};
+    // Map.addLayer(composite_1, visP, "land"+eeNumYear, 0);
+// return demProducts
+    return composite_1.addBands(demProducts)
+}
+
+function titianiImg (eeNumYear){
+  
+  var compositeYear = composite_year(eeNumYear);
+  
+  // Classify the composite.
+  var classified_smileRandomForest_year = compositeYear.classify(trainedClassifier_smileRandomForest);
+  // print(classified_smileRandomForest_year)
+  TTCol = TTCol.addBands(classified_smileRandomForest_year.rename("B"+eeNumYear));
+  
+  var classified_smileRandomForest_year_pro = compositeYear.classify(trainedClassifier_smileRandomForest.setOutputMode("PROBABILITY"))
+  TTCol_pro = TTCol_pro.addBands(classified_smileRandomForest_year_pro.rename("B"+eeNumYear));
+  
+  // Map.addLayer(classified_smileRandomForest_year, {min: 0, max: 1, palette: ['red', 'green']},"result-smileRF"+eeNumYear, 0);
+  // Map.addLayer(classified_smileRandomForest_year_pro, {min: 0, max: 1, palette: ['red', 'green']},"result-smileRF_pro"+eeNumYear, 0);
+  // print(classified_smileRandomForest_year);
+
+  
+  var fileNameFre = eeNumYear+"_landsat5_TT_";///////-------
+  var imgName = (fileNameFre).concat('imgT1');
+//   Export.image.toDrive({ 
+//     image: compositeYear.clip(gys), 
+//     description: imgName, 
+//     fileNamePrefix: imgName, 
+//     region: gys, 
+//     scale: 30, 
+//     crs: "EPSG:4326", 
+//     maxPixels: 1e13 
+// });
+  
+  // //导出结果影像
+  // Export.image.toDrive({ 
+  //   image: classified_smileRandomForest_year.clip(gys), 
+  //   description: fileNameFre, 
+  //   fileNamePrefix: fileNameFre, 
+  //   region: gys, 
+  //   scale: 30, 
+  //   crs: "EPSG:4326", 
+  //   maxPixels: 1e13 
+  // });
+}
+
+
+//------------------------Use these bands for classification
+
+var needBands = ["B[1-5]", "B7", "ndvi", "ndmi", "ndwi","ndbi", "evi"];///////-------
+var yun = 49;
+var imageColName = 'LANDSAT/LT05/C01/T1_SR';
+// var gysArea = gys.geometry().area()
+
+var LSR_BANDS = ['B1',   'B2',    'B3',  'B4',  'B5',    'B7',  ];
+var STD_NAMES = ['blue', 'green', 'red', 'nir', 'swir1', 'swir2'];
+
+//影像张数计数器
+var yearImgNum = [["num1为T1,num2为T2&yun<".concat(yun)],
+                  ["year", "num1", "129035", "total"]];
+
+//分类结果集
+var TTCol = ee.Image().select();
+var TTCol_pro = ee.Image().select();
+//添加GYS边界
+//Map.addLayer(gys,{"outline_color": "red", "outline": 2, "fill_color": "blue"},"gys");
+
+
+
+//------------------------dem
+var DEM = ee.Image("USGS/SRTMGL1_003").clip(gys).select('elevation');
+var DEMmax_min1 = DEM.focal_max().subtract(DEM.focal_min()).rename("max_min1")//.toUint16();
+var DEMmax_min2 = DEM.focal_max(3).subtract(DEM.focal_min(3)).rename("max_min2")//.toUint16();
+var DEMmax_min3 = DEM.focal_max(5).subtract(DEM.focal_min(5)).rename("max_min3")//.toUint16();
+// Map.addLayer(DEMmax_min, {max:300, min:0}, "max_min");
+var demProducts = ee.Terrain.products(DEM).select( 'elevation', "slope", "aspect")
+                  .addBands(DEMmax_min1).addBands(DEMmax_min2).addBands(DEMmax_min3);
+// Merge the two geometry layers into a single FeatureCollection.
+var newfc = titian.merge(table).merge(table3).merge(table2);
+var newfc2000 = table4.merge(table5);
+print("样本信息", newfc);
+
+
+//------------------------机器学习入口开始
+
+// The name of the property on the points storing the class label.
+var classProperty = 'landcover';
+
+// Sample the composite to generate training data.  Note that the
+// class label is stored in the 'landcover' property.
+//--------------------------------------------
+var Numyear1 = 2010
+var Numyear2 = 2011
+var Numyear3 = 2000
+var composite1 = composite_year(Numyear1)
+// var training1 = composite1.sampleRegions({
+//   collection: newfc,
+//   properties: [classProperty],
+//   scale: 30,
+//   geometries: true
+// }).map(function(feature) {
+//         return feature.set({"year":Numyear1});
+//     });
+// var training2 = composite_year(Numyear2).sampleRegions({
+//   collection: newfc,
+//   properties: [classProperty],
+//   scale: 30,
+//   geometries: true
+// }).map(function(feature) {
+//         return feature.set({"year":Numyear2});
+//     });
+// var training3 = composite_year(Numyear3).sampleRegions({
+//   collection: newfc2000,
+//   properties: [classProperty],
+//   scale: 30,
+//   geometries: true
+// }).map(function(feature) {
+//         return feature.set({"year":Numyear3});
+//     });
+// var training =training1.merge(training2).merge(training3);
+// // print ("training total Num",training);
+// var withRandom = training.randomColumn('random', 1)
+
+
+//------------------------样本分割
+// Optionally, do some accuracy assessment.  Fist, add a column of
+// random uniforms to the training dataset.
+
+var withRandom = ee.FeatureCollection("users/626251037/percentile/LT05simples")
+                // .randomColumn('random', 1)
+
+// We want to reserve some of the data for testing, to avoid overfitting the model.
+var split = 0.9 ;  // Roughly 80% training, 20% testing.
+var trainingPartition = withRandom.filter(ee.Filter.lt('random', split));
+var testingPartition = withRandom.filter(ee.Filter.gte('random', split));
+var bandsList = composite1.bandNames();
+// print("bandsList", bandsList);
+print("bandsList+classProperty", bandsList, testingPartition);
+
+
+//------------------------划分样本——精度验证
+//-----------smileRandomForest
+var trainedClassifier_smileRandomForest = ee.Classifier.smileRandomForest({
+    numberOfTrees: 500,
+    // variablesPerSplit: 15,
+    bagFraction: 0.9,
+    // minLeafPopulation: 10,
+    // seed: 7
+  }).train({
+  features: trainingPartition,
+  classProperty: classProperty,
+  inputProperties: bandsList// 获取bands list
+});
+
+// Classify the test FeatureCollection.
+var test_smileRandomForest = testingPartition.classify(trainedClassifier_smileRandomForest);
+// print("test_smileRandomForest", test_smileRandomForest);
+// Print the confusion matrix.
+var confusionMatrix_smileRandomForest = test_smileRandomForest.errorMatrix(classProperty, 'classification');
+print('Confusion Matrix_smileRandomForest,矩阵/kappa/Acc', confusionMatrix_smileRandomForest,
+      confusionMatrix_smileRandomForest.kappa(),confusionMatrix_smileRandomForest.accuracy(),
+      trainedClassifier_smileRandomForest.explain());
+
+
+//-----------smileCart
+var trainedClassifier_smileCart = ee.Classifier.smileCart().train({
+  features: trainingPartition,
+  classProperty: classProperty,
+  inputProperties:bandsList// 获取bands list
+});
+
+// Classify the test FeatureCollection.
+var test_smileCart = testingPartition.classify(trainedClassifier_smileCart);
+// print("test_smileCart", test_smileCart);
+// Print the confusion matrix.
+var confusionMatrix_smileCart = test_smileCart.errorMatrix(classProperty, 'classification');
+print('Confusion Matrix_smileCart,矩阵/kappa/Acc', confusionMatrix_smileCart,
+      confusionMatrix_smileCart.kappa(),confusionMatrix_smileCart.accuracy())
+      // ,trainedClassifier_smileCart.schema());
+
+//-----------libsvm
+var trainedClassifier_libsvm = ee.Classifier.libsvm().train({
+  features: trainingPartition,
+  classProperty: classProperty,
+  inputProperties:bandsList// 获取bands list
+});
+
+// Classify the test FeatureCollection.
+var test_libsvm = testingPartition.classify(trainedClassifier_libsvm);
+// print("test_libsvm", test_libsvm);
+// Print the confusion matrix.
+var confusionMatrix_libsvm = test_libsvm.errorMatrix(classProperty, 'classification');
+print('Confusion Matrix_libsvm,矩阵/kappa/Acc', confusionMatrix_libsvm,
+      confusionMatrix_libsvm.kappa(),confusionMatrix_libsvm.accuracy())
+      // ,trainedClassifier_libsvm.schema());
+
+// 导出分类结果年 时间控制器
+for (var eeNumYear=1987; eeNumYear <= 2011; eeNumYear = eeNumYear+1 )
+{ 
+  titianiImg (eeNumYear);
+}
+
+
+print("年影像数：", yearImgNum);
+
+// print("TTCol", TTCol)
+// Map.addLayer(newfc, {min: 0, max: 1, palette: ['red', 'green']}, "simple point", 0);
+
+Export.table.toDrive({
+  collection:withRandom,
+  description:imageColName.slice(8, 12)+"simples", 
+  // folder, 
+  //fileNamePrefix, 
+  // fileFormat:"SHP",
+  // selectors:bandsList.add(classProperty)
+  });
+Export.table.toAsset(withRandom, imageColName.slice(8, 12)+"simples")
+
+//导出结果影像
+// print(TTCol)
+Export.image.toAsset({ 
+  image: TTCol.clip(gys), 
+  description: imageColName.slice(8, 12)+"RF", 
+  assetId: imageColName.slice(8, 12)+"RF", 
+  region: gys, 
+  scale: 30, 
+  crs: "EPSG:4326", 
+  maxPixels: 1e13
+});
+
+Export.image.toAsset({ 
+  image: TTCol_pro.clip(gys), 
+  description: imageColName.slice(8, 12)+"_pro", 
+  assetId: imageColName.slice(8, 12)+"_pro", 
+  region: gys, 
+  scale: 30, 
+  crs: "EPSG:4326", 
+  maxPixels: 1e13 
+});
+/*
+*/
